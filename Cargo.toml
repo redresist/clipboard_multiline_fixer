@@ -1,0 +1,14 @@
+[package]
+name = "clipboard_multiline_fixer"
+version = "0.1.0"
+edition = "2021"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+
+[dependencies]
+winit = "0.30"
+tray-icon = "0.19"
+global-hotkey = "0.7"
+arboard = "3"
+enigo = "0.2"
