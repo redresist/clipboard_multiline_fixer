@@ -132,7 +132,7 @@ fn should_join(current: &str, next: &str, term_width: usize) -> bool {
         return false;
     }
 
-    let c_len = current.len();
+    let c_len = c_trimmed.len();
 
     if c_trimmed.ends_with('\\') || c_trimmed.ends_with('^') || c_trimmed.ends_with('`') {
         return true;
@@ -238,6 +238,10 @@ fn is_continuation_char(c: char) -> bool {
 }
 
 fn join_group(group: &[&str]) -> String {
+    if group.len() == 1 {
+        return group[0].trim_end().to_string();
+    }
+
     let mut result = String::new();
     for (i, line) in group.iter().enumerate() {
         if i == 0 {
@@ -254,11 +258,28 @@ fn join_group(group: &[&str]) -> String {
                 }
             }
 
-            result.push(' ');
-            result.push_str(line.trim_start());
+            let trimmed = line.trim_start();
+            if !trimmed.is_empty() {
+                result.push(' ');
+                result.push_str(trimmed);
+            }
         }
     }
-    result
+
+    let mut out = String::with_capacity(result.len());
+    let mut prev_space = false;
+    for c in result.chars() {
+        if c == ' ' || c == '\t' {
+            if !prev_space {
+                out.push(' ');
+                prev_space = true;
+            }
+        } else {
+            out.push(c);
+            prev_space = false;
+        }
+    }
+    out
 }
 
 #[cfg(test)]

@@ -27,6 +27,7 @@ extern "system" {
 }
 
 static CONSOLE_ENABLED: AtomicBool = AtomicBool::new(false);
+static HOTKEY_BUSY: AtomicBool = AtomicBool::new(false);
 
 fn debug_log(msg: &str) {
     if CONSOLE_ENABLED.load(Ordering::Relaxed) {
@@ -115,8 +116,10 @@ fn main() {
             while let Ok(_ev) = tray_rx.try_recv() {}
 
             while let Ok(_ev) = hotkey_rx.try_recv() {
-                if !paused.load(Ordering::Relaxed) {
+                if !paused.load(Ordering::Relaxed) && !HOTKEY_BUSY.swap(true, Ordering::AcqRel) {
                     fix_and_paste(&mut clipboard);
+                    while let Ok(_) = hotkey_rx.try_recv() {}
+                    HOTKEY_BUSY.store(false, Ordering::Release);
                 }
             }
 
