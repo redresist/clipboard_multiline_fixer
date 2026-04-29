@@ -306,7 +306,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "clipboard_fixer"
+name = "clipboard_multiline_fixer"
 version = "0.1.0"
 dependencies = [
  "arboard",

@@ -20,6 +20,20 @@ use winreg::enums::*;
 #[cfg(windows)]
 use winreg::RegKey;
 
+#[cfg(windows)]
+extern "system" {
+    fn AllocConsole() -> i32;
+    fn FreeConsole() -> i32;
+}
+
+static CONSOLE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+fn debug_log(msg: &str) {
+    if CONSOLE_ENABLED.load(Ordering::Relaxed) {
+        eprintln!("[cfx] {}", msg);
+    }
+}
+
 fn main() {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
 
@@ -34,20 +48,23 @@ fn main() {
     };
 
     let _hotkey_manager = GlobalHotKeyManager::new().expect("Failed to create hotkey manager");
-    let hotkey =
-        HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Insert);
-    _hotkey_manager
-        .register(hotkey)
-        .expect("Failed to register hotkey");
+    let hotkey = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Insert);
+    if let Err(e) = _hotkey_manager.register(hotkey) {
+        debug_log(&format!("Hotkey registration failed: {}", e));
+    } else {
+        debug_log("Hotkey Ctrl+Shift+Ins registered");
+    }
 
     let tray_menu = Menu::new();
     let pause_item = MenuItem::new("Pause", true, None);
     let autostart_item = CheckMenuItem::new("Start with Windows", true, false, None);
+    let console_item = CheckMenuItem::new("Show Console", true, false, None);
     let quit_item = MenuItem::new("Quit", true, None);
 
     tray_menu.append(&pause_item).ok();
     tray_menu.append(&PredefinedMenuItem::separator()).ok();
     tray_menu.append(&autostart_item).ok();
+    tray_menu.append(&console_item).ok();
     tray_menu.append(&PredefinedMenuItem::separator()).ok();
     tray_menu.append(&quit_item).ok();
 
@@ -80,11 +97,17 @@ fn main() {
                 if ev.id == pause_item.id() {
                     let was_paused = paused.fetch_xor(true, Ordering::Relaxed);
                     pause_item.set_text(if was_paused { "Pause" } else { "Resume" });
+                    debug_log(if was_paused { "Paused" } else { "Resumed" });
                 } else if ev.id == autostart_item.id() {
                     let new = !is_autostart_enabled();
                     set_autostart(new);
                     autostart_item.set_checked(new);
+                    debug_log(&format!("Auto-start: {}", if new { "ON" } else { "OFF" }));
+                } else if ev.id == console_item.id() {
+                    toggle_console();
+                    console_item.set_checked(CONSOLE_ENABLED.load(Ordering::Relaxed));
                 } else if ev.id == quit_item.id() {
+                    debug_log("Quitting");
                     target.exit();
                 }
             }
@@ -103,8 +126,21 @@ fn main() {
                     last_check = now;
                     if let Ok(content) = clipboard.get_text() {
                         if content != last_content {
+                            debug_log(&format!(
+                                "Clipboard changed: {} chars",
+                                content.len()
+                            ));
+                            if CONSOLE_ENABLED.load(Ordering::Relaxed) && content.len() < 200 {
+                                debug_log(&format!("Raw: {:?}", content));
+                            }
                             let fixed = fixer::fix(&content);
                             if fixed != content {
+                                debug_log("Auto-fix: wrapped lines rejoined");
+                                if CONSOLE_ENABLED.load(Ordering::Relaxed)
+                                    && fixed.len() < 200
+                                {
+                                    debug_log(&format!("Fixed: {:?}", fixed));
+                                }
                                 let _ = clipboard.set_text(&fixed);
                             }
                             last_content = fixed;
@@ -120,19 +156,78 @@ fn main() {
     });
 }
 
-fn fix_and_paste(clipboard: &mut Clipboard) {
-    if let Ok(content) = clipboard.get_text() {
-        let fixed = fixer::fix(&content);
-        if fixed != content {
-            let _ = clipboard.set_text(&fixed);
+fn toggle_console() {
+    let was_enabled = CONSOLE_ENABLED.fetch_xor(true, Ordering::Relaxed);
+    if !was_enabled {
+        #[cfg(windows)]
+        unsafe {
+            if AllocConsole() != 0 {
+                println!("[cfx] Console attached");
+                println!("[cfx] Clipboard Multiline Fixer running");
+                println!("[cfx] Ctrl+Shift+Ins = fix & paste");
+                println!("[cfx] Uncheck 'Show Console' in tray to hide");
+            }
+        }
+    } else {
+        #[cfg(windows)]
+        unsafe {
+            FreeConsole();
         }
     }
+}
 
-    if let Ok(mut enigo) = Enigo::new(&Settings::default()) {
-        let _ = enigo.key(Key::LShift, Direction::Press);
-        let _ = enigo.key(Key::Insert, Direction::Click);
-        let _ = enigo.key(Key::LShift, Direction::Release);
+fn fix_and_paste(clipboard: &mut Clipboard) {
+    debug_log("Hotkey: fixing clipboard");
+
+    let content = match clipboard.get_text() {
+        Ok(c) => c,
+        Err(e) => {
+            debug_log(&format!("Clipboard read error: {}", e));
+            return;
+        }
+    };
+
+    debug_log(&format!("Read {} chars from clipboard", content.len()));
+    if CONSOLE_ENABLED.load(Ordering::Relaxed) && content.len() < 200 {
+        debug_log(&format!("Content: {:?}", content));
     }
+
+    let fixed = fixer::fix(&content);
+    if fixed != content {
+        debug_log("Wrapped lines detected and fixed");
+        if CONSOLE_ENABLED.load(Ordering::Relaxed) && fixed.len() < 200 {
+            debug_log(&format!("Fixed: {:?}", fixed));
+        }
+        if let Err(e) = clipboard.set_text(&fixed) {
+            debug_log(&format!("Clipboard write error: {}", e));
+            return;
+        }
+    } else {
+        debug_log("No wrapping detected");
+    }
+
+    let mut enigo = match Enigo::new(&Settings::default()) {
+        Ok(e) => e,
+        Err(err) => {
+            debug_log(&format!("Enigo init failed: {}", err));
+            debug_log("Trying fallback: Ctrl+V");
+            if let Ok(mut e2) = Enigo::new(&Settings::default()) {
+                let _ = e2.key(Key::Control, Direction::Press);
+                let _ = e2.key(Key::Unicode('v'), Direction::Click);
+                let _ = e2.key(Key::Control, Direction::Release);
+                debug_log("Fallback Ctrl+V sent");
+            } else {
+                debug_log("Enigo completely unavailable — cannot simulate paste");
+            }
+            return;
+        }
+    };
+
+    debug_log("Simulating Shift+Insert");
+    let _ = enigo.key(Key::LShift, Direction::Press);
+    let _ = enigo.key(Key::Insert, Direction::Click);
+    let _ = enigo.key(Key::LShift, Direction::Release);
+    debug_log("Paste simulated");
 }
 
 #[cfg(windows)]

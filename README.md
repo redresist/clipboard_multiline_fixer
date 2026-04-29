@@ -26,6 +26,7 @@ When a long command wraps to multiple lines in the terminal, copying it includes
 ─────────────────────────
 ⏸ Pause / ▶ Resume    (toggle — pauses auto-fix + hotkey)
 🔁 Start with Windows  (toggle — HKCU\Run registry)
+📄 Show Console        (toggle — opens debug console to see what's happening)
 ─────────────────────────
 ❌ Quit
 ```
