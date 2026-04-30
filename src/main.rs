@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-#![allow(deprecated)]
+#![allow(deprecated, non_snake_case, dead_code)]
 
 mod fixer;
 
@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use arboard::Clipboard;
-use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -24,6 +23,35 @@ use winreg::RegKey;
 extern "system" {
     fn AllocConsole() -> i32;
     fn FreeConsole() -> i32;
+    fn SendInput(cInputs: u32, pInputs: *mut INPUT, cbSize: i32) -> u32;
+    fn GetLastError() -> u32;
+}
+
+#[cfg(windows)]
+const INPUT_KEYBOARD: u32 = 1;
+#[cfg(windows)]
+const KEYEVENTF_KEYUP: u32 = 2;
+#[cfg(windows)]
+const VK_LSHIFT: u16 = 0xA0;
+const VK_INSERT: u16 = 0x2D;
+const VK_LCONTROL: u16 = 0xA2;
+const VK_V: u16 = 0x56;
+
+#[cfg(windows)]
+#[repr(C)]
+struct KEYBDINPUT {
+    wVk: u16,
+    wScan: u16,
+    dwFlags: u32,
+    time: u32,
+    dwExtraInfo: usize,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct INPUT {
+    type_: u32,
+    ki: KEYBDINPUT,
 }
 
 static CONSOLE_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -209,28 +237,64 @@ fn fix_and_paste(clipboard: &mut Clipboard) {
         debug_log("No wrapping detected");
     }
 
-    let mut enigo = match Enigo::new(&Settings::default()) {
-        Ok(e) => e,
-        Err(err) => {
-            debug_log(&format!("Enigo init failed: {}", err));
-            debug_log("Trying fallback: Ctrl+V");
-            if let Ok(mut e2) = Enigo::new(&Settings::default()) {
-                let _ = e2.key(Key::Control, Direction::Press);
-                let _ = e2.key(Key::Unicode('v'), Direction::Click);
-                let _ = e2.key(Key::Control, Direction::Release);
-                debug_log("Fallback Ctrl+V sent");
-            } else {
-                debug_log("Enigo completely unavailable — cannot simulate paste");
-            }
-            return;
+    debug_log("Simulating Shift+Insert paste");
+    if simulate_shift_insert() {
+        debug_log("Shift+Insert sent successfully");
+    } else {
+        debug_log("Shift+Insert failed, trying Ctrl+V");
+        if simulate_ctrl_v() {
+            debug_log("Ctrl+V sent successfully");
+        } else {
+            debug_log("All paste methods failed — clipboard was fixed, paste manually with Shift+Insert");
         }
-    };
+    }
+}
 
-    debug_log("Simulating Shift+Insert");
-    let _ = enigo.key(Key::LShift, Direction::Press);
-    let _ = enigo.key(Key::Insert, Direction::Click);
-    let _ = enigo.key(Key::LShift, Direction::Release);
-    debug_log("Paste simulated");
+#[cfg(windows)]
+fn simulate_shift_insert() -> bool {
+    unsafe {
+        // User is holding Ctrl+Shift from the hotkey.
+        // Release both first, then press Shift+Insert, then release.
+        let mut inputs = [
+            INPUT { type_: INPUT_KEYBOARD, ki: KEYBDINPUT { wVk: VK_LCONTROL, wScan: 0, dwFlags: KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 } },
+            INPUT { type_: INPUT_KEYBOARD, ki: KEYBDINPUT { wVk: VK_LSHIFT,   wScan: 0, dwFlags: KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 } },
+            INPUT { type_: INPUT_KEYBOARD, ki: KEYBDINPUT { wVk: VK_LSHIFT,   wScan: 0, dwFlags: 0,               time: 0, dwExtraInfo: 0 } },
+            INPUT { type_: INPUT_KEYBOARD, ki: KEYBDINPUT { wVk: VK_INSERT,   wScan: 0, dwFlags: 0,               time: 0, dwExtraInfo: 0 } },
+            INPUT { type_: INPUT_KEYBOARD, ki: KEYBDINPUT { wVk: VK_INSERT,   wScan: 0, dwFlags: KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 } },
+            INPUT { type_: INPUT_KEYBOARD, ki: KEYBDINPUT { wVk: VK_LSHIFT,   wScan: 0, dwFlags: KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 } },
+        ];
+        let result = SendInput(6, inputs.as_mut_ptr(), std::mem::size_of::<INPUT>() as i32);
+        if result == 0 {
+            debug_log(&format!("SendInput Shift+Insert failed, error: {}", GetLastError()));
+        }
+        result > 0
+    }
+}
+
+#[cfg(windows)]
+fn simulate_ctrl_v() -> bool {
+    unsafe {
+        let mut inputs = [
+            INPUT { type_: INPUT_KEYBOARD, ki: KEYBDINPUT { wVk: VK_LSHIFT,   wScan: 0, dwFlags: KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 } },
+            INPUT { type_: INPUT_KEYBOARD, ki: KEYBDINPUT { wVk: VK_LCONTROL, wScan: 0, dwFlags: KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 } },
+            INPUT { type_: INPUT_KEYBOARD, ki: KEYBDINPUT { wVk: VK_LCONTROL, wScan: 0, dwFlags: 0,               time: 0, dwExtraInfo: 0 } },
+            INPUT { type_: INPUT_KEYBOARD, ki: KEYBDINPUT { wVk: VK_V,        wScan: 0, dwFlags: 0,               time: 0, dwExtraInfo: 0 } },
+            INPUT { type_: INPUT_KEYBOARD, ki: KEYBDINPUT { wVk: VK_V,        wScan: 0, dwFlags: KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 } },
+            INPUT { type_: INPUT_KEYBOARD, ki: KEYBDINPUT { wVk: VK_LCONTROL, wScan: 0, dwFlags: KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 } },
+        ];
+        let result = SendInput(6, inputs.as_mut_ptr(), std::mem::size_of::<INPUT>() as i32);
+        result > 0
+    }
+}
+
+#[cfg(not(windows))]
+fn simulate_shift_insert() -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+fn simulate_ctrl_v() -> bool {
+    false
 }
 
 #[cfg(windows)]
